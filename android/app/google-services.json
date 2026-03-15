@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "433387828741",
+    "project_id": "shiffters-cbbbb",
+    "storage_bucket": "shiffters-cbbbb.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:433387828741:android:f674f3b2fe92a70af80e6c",
+        "android_client_info": {
+          "package_name": "com.example.shiffters"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCZYvw_ngBHSKyQzA9TzLD1Fx8D4CDROVk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

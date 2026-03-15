@@ -1,0 +1,893 @@
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===========================================
+    // ORDERS COLLECTION - Comprehensive rules for all order operations
+    // ===========================================
+    match /orders/{orderId} {
+      
+      // READ RULES - Allow reading orders based on different scenarios
+      allow read: if request.auth != null && (
+        // Allow drivers to read pending/confirmed/active orders for discovery
+        resource.data.status in ['pending', 'confirmed', 'active'] ||
+        // Allow assigned driver to read their orders
+        resource.data.driverId == request.auth.uid ||
+        // Allow order owner to read their orders (supporting both uid and userId fields)
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        // Allow admins to read all orders
+        request.auth.token.admin == true
+      );
+      
+      // READ RULES - Allow all authenticated users to read orders (for testing)
+      allow read: if request.auth != null;
+      
+      // LIST RULES - Allow users to query their own orders with where clauses
+      allow list: if request.auth != null && (
+        // Always allow listing for authenticated users with reasonable limits
+        request.query.limit <= 50 ||
+        // Allow unlimited listing for specific conditions
+        request.auth.uid != null ||
+        // Allow admins to list all orders
+        request.auth.token.admin == true
+      );
+      
+      // TEMPORARY: Allow any authenticated user to list orders for dashboard (remove this in production)
+      allow list: if request.auth != null;
+      
+      // CREATE RULES - Comprehensive order creation rules
+      allow create: if request.auth != null && (
+        // Standard order creation
+        (
+          (request.auth.uid == request.resource.data.uid || 
+           request.auth.uid == request.resource.data.userId) &&
+          request.resource.data.keys().hasAll(['status', 'createdAt']) &&
+          request.resource.data.status in ['pending', 'confirmed', 'active', 'pending_payment']
+        ) ||
+        // Shifting service orders
+        (
+          request.auth.uid == request.resource.data.uid &&
+          request.resource.data.orderType == 'shifting' &&
+          request.resource.data.status in ['pending', 'confirmed', 'active', 'pending_payment']
+        ) ||
+        // Pickup & drop orders
+        (
+          request.auth.uid == request.resource.data.uid &&
+          request.resource.data.orderType == 'pickndrop' &&
+          request.resource.data.status == 'confirmed'
+        )
+      );
+      
+      // UPDATE RULES - Complex logic for different update scenarios
+      allow update: if request.auth != null && (
+        
+        // SCENARIO 1: Driver accepting an order
+        (
+          resource.data.status in ['pending', 'confirmed', 'active'] &&
+          request.resource.data.status == 'accepted' &&
+          request.resource.data.driverId == request.auth.uid &&
+          request.resource.data.keys().hasAll(['acceptedAt', 'driverLocation']) &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.createdAt == resource.data.createdAt
+        ) ||
+        
+        // SCENARIO 2: Driver rejecting an order (adding to rejection list)
+        (
+          resource.data.status in ['pending', 'confirmed', 'active'] &&
+          request.resource.data.keys().hasAny(['rejectedBy']) &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.status == resource.data.status &&
+          request.resource.data.createdAt == resource.data.createdAt
+        ) ||
+        
+        // SCENARIO 3: Order owner updating their own order
+        (
+          (resource.data.uid == request.auth.uid || 
+           resource.data.userId == request.auth.uid) &&
+          (
+            !resource.data.keys().hasAny(['driverId']) ||
+            resource.data.driverId == request.resource.data.driverId
+          )
+        ) ||
+        
+        // SCENARIO 4: Assigned driver updating order progress
+        (
+          resource.data.driverId == request.auth.uid &&
+          request.resource.data.uid == resource.data.uid &&
+          request.resource.data.createdAt == resource.data.createdAt
+        ) ||
+        
+        // SCENARIO 5: Payment status updates for shifting/pickup orders
+        (
+          resource.data.uid == request.auth.uid &&
+          request.resource.data.uid == request.auth.uid &&
+          (
+            request.resource.data.status in ['confirmed', 'paid'] ||
+            request.resource.data.keys().hasAny(['paymentMethod', 'paymentStatus', 'paymentDetails'])
+          )
+        )
+      );
+      
+      // DELETE RULES - Only order owners and admins
+      allow delete: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+      
+      // UPDATE RULES - Allow admins to update any order
+      allow update: if request.auth != null && request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // USERS COLLECTION - User profiles and account data
+    // ===========================================
+    match /users/{userId} {
+      // Allow users to read and write their own data
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      // Allow user creation during registration (before auth is complete)
+      allow create: if request.auth != null && (
+        request.auth.uid == userId ||
+        request.resource.data.keys().hasAny(['phone', 'email', 'name'])
+      );
+      
+      // Allow admins full access to user data for management
+      allow read, write, update, delete: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // Allow admins to list all users
+      allow list: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // Allow reading user data for order-related operations
+      allow read: if request.auth != null;
+      
+      // Allow listing users with reasonable limits
+      allow list: if request.auth != null && request.query.limit <= 50;
+    }
+    
+    // ===========================================
+    // OTP VERIFICATION - Phone number verification
+    // ===========================================
+    match /otpVerification/{phoneNumber} {
+      // Allow reading OTP data for verification
+      allow read: if request.auth != null;
+      
+      // Allow creating OTP records during registration
+      allow create: if true;
+      
+      // Allow updating OTP records for verification attempts
+      allow update: if true;
+      
+      // Allow deleting OTP records after successful verification
+      allow delete: if request.auth != null;
+    }
+    
+    // ===========================================
+    // USER REGISTRATION - Account creation process
+    // ===========================================
+    match /userRegistration/{registrationId} {
+      // Allow creating registration records
+      allow create: if true;
+      
+      // Allow reading registration status
+      allow read: if true;
+      
+      // Allow updating registration progress
+      allow update: if true;
+      
+      // Allow deleting after successful registration
+      allow delete: if request.auth != null;
+    }
+    
+    // ===========================================
+    // PHONE VERIFICATION - SMS verification
+    // ===========================================
+    match /phoneVerification/{verificationId} {
+      // Allow creating phone verification records
+      allow create: if true;
+      
+      // Allow reading verification status
+      allow read: if true;
+      
+      // Allow updating verification attempts
+      allow update: if true;
+      
+      // Allow deleting after verification
+      allow delete: if true;
+    }
+    
+    // ===========================================
+    // DRIVERS COLLECTION - Driver-specific data
+    // ===========================================
+    match /drivers/{driverId} {
+      // Allow drivers to read/write their own data
+      allow read, write: if request.auth != null && request.auth.uid == driverId;
+      
+      // Allow other drivers to read basic driver info (for order assignments)
+      allow read: if request.auth != null;
+      
+      // Allow admins full access to driver data
+      allow read, write, update, delete: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // Allow admins to list all drivers
+      allow list: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // Specifically allow admin updates for approval/rejection
+      allow update: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to update drivers (remove this in production)
+      allow update: if request.auth != null;
+    }
+    
+    // ===========================================
+    // PICKUP DROP ORDERS - Alternative order collection
+    // ===========================================
+    match /pickup_drop_orders/{orderId} {
+      // Same rules as main orders collection
+      allow read: if request.auth != null && (
+        resource.data.status in ['pending', 'confirmed'] ||
+        resource.data.driverId == request.auth.uid ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null && (
+        request.auth.uid == request.resource.data.uid ||
+        request.auth.uid == request.resource.data.userId
+      );
+      
+      allow update: if request.auth != null && (
+        // Driver acceptance
+        (
+          resource.data.status in ['pending', 'confirmed'] &&
+          request.resource.data.status == 'accepted' &&
+          request.resource.data.driverId == request.auth.uid
+        ) ||
+        // Driver rejection tracking
+        (
+          resource.data.status in ['pending', 'confirmed'] &&
+          request.resource.data.keys().hasAny(['rejectedBy'])
+        ) ||
+        // Owner updates
+        (
+          resource.data.uid == request.auth.uid || 
+          resource.data.userId == request.auth.uid
+        ) ||
+        // Assigned driver updates
+        (
+          resource.data.driverId == request.auth.uid
+        )
+      );
+      
+      allow delete: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+    }
+    
+    // ===========================================
+    // SHIFTING REQUESTS - Shifting service orders
+    // ===========================================
+    match /shifting_requests/{requestId} {
+      allow read: if request.auth != null && (
+        resource.data.status in ['pending', 'confirmed'] ||
+        resource.data.driverId == request.auth.uid ||
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null && (
+        request.auth.uid == request.resource.data.uid ||
+        request.auth.uid == request.resource.data.userId
+      );
+      
+      allow update: if request.auth != null && (
+        // Driver acceptance
+        (
+          resource.data.status in ['pending', 'confirmed'] &&
+          request.resource.data.driverId == request.auth.uid
+        ) ||
+        // Owner or assigned driver updates
+        (
+          resource.data.uid == request.auth.uid || 
+          resource.data.userId == request.auth.uid ||
+          resource.data.driverId == request.auth.uid
+        )
+      );
+    }
+    
+    // ===========================================
+    // NOTIFICATIONS - Driver notifications
+    // ===========================================
+    match /notifications/{notificationId} {
+      allow read: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null;
+      
+      allow update: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+    }
+    
+    // ===========================================
+    // PAYMENTS - Order payment tracking
+    // ===========================================
+    match /payments/{paymentId} {
+      allow read, write: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null && (
+        request.auth.uid == request.resource.data.uid ||
+        request.auth.uid == request.resource.data.userId ||
+        request.auth.uid == request.resource.data.driverId
+      );
+    }
+    
+    // ===========================================
+    // TRANSACTIONS - Financial tracking
+    // ===========================================
+    match /transactions/{transactionId} {
+      allow read, write: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null;
+    }
+    
+    // ===========================================
+    // REVIEWS - Order reviews and ratings
+    // ===========================================
+    match /reviews/{reviewId} {
+      allow read: if true; // Public read access for reviews
+      
+      allow write: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null;
+    }
+    
+    // ===========================================
+    // CONVERSATIONS - Driver-customer conversation metadata
+    // ===========================================
+    match /conversations/{conversationId} {
+      // Allow reading conversations where user is participant
+      allow read: if request.auth != null && (
+        request.auth.uid in resource.data.participants ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      // Allow creating conversations if user is a participant
+      allow create: if request.auth != null && (
+        request.auth.uid in request.resource.data.participants ||
+        request.resource.data.userId == request.auth.uid ||
+        request.resource.data.driverId == request.auth.uid
+      );
+      
+      // Allow updating conversations (for lastMessage, timestamps, unread counts)
+      allow update: if request.auth != null && (
+        request.auth.uid in resource.data.participants ||
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      // Allow listing conversations for authenticated users with participants filter
+      allow list: if request.auth != null;
+    }
+
+    // ===========================================
+    // MESSAGES - Individual messages in conversations
+    // ===========================================
+    match /messages/{messageId} {
+      // Allow reading messages for authenticated users (validation in client)
+      allow read: if request.auth != null;
+      
+      // Allow listing messages for authenticated users (validation in client)
+      allow list: if request.auth != null;
+      
+      // Allow creating messages if user is the sender
+      allow create: if request.auth != null && 
+        request.resource.data.senderId == request.auth.uid &&
+        request.resource.data.keys().hasAll(['conversationId', 'senderId', 'senderType', 'message']);
+      
+      // Allow updating messages for authenticated users (for read status)
+      allow update: if request.auth != null;
+    }
+    
+    // ===========================================
+    // VEHICLES - Vehicle information
+    // ===========================================
+    match /vehicles/{vehicleId} {
+      allow read: if true; // Public read for vehicle browsing
+      allow write: if request.auth != null;
+    }
+    
+    // ===========================================
+    // TICKETS - Driver support tickets
+    // ===========================================
+    match /tickets/{ticketId} {
+      allow read: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        resource.data.driverId == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+      
+      allow create: if request.auth != null && 
+        request.resource.data.uid == request.auth.uid;
+      
+      allow update: if request.auth != null && (
+        resource.data.uid == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+    }
+    
+    // ===========================================
+    // ADMIN COLLECTIONS
+    // ===========================================
+    match /admin/{document=**} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // USER STATS - Admin dashboard statistics
+    // ===========================================
+    match /userStats/{statId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read user stats (remove this in production)
+      allow read: if request.auth != null;
+    }
+    
+    // Alternative path for user statistics
+    match /stats/users {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read user stats (remove this in production)
+      allow read: if request.auth != null;
+    }
+    
+    // ===========================================
+    // APP SETTINGS - Global application configuration
+    // ===========================================
+    match /app_settings/{settingsId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Global app settings document
+    match /app_settings/global {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // DISCOUNTS - Discount and promotion management
+    // ===========================================
+    match /discounts/{discountId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow create: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow delete: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // ANALYTICS AND REPORTS - Dashboard statistics
+    // ===========================================
+    match /analytics/{analyticsId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read analytics (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Revenue and order analytics
+    match /reports/{reportId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read reports (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Driver performance analytics
+    match /driverAnalytics/{driverId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read driver analytics (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // ===========================================
+    // ADMIN USER MANAGEMENT - Admin profiles and permissions
+    // ===========================================
+    match /admins/{adminId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Admin activity logs
+    match /adminLogs/{logId} {
+      allow read: if request.auth != null && 
+        request.auth.token.admin == true;
+      allow create: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    match /settings/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    match /announcements/{announcementId} {
+      allow read: if request.auth != null;
+      allow list: if request.auth != null;
+      allow create, update, delete: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // DRIVER APPLICATIONS
+    // ===========================================
+    match /driverApplications/{applicationId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+      
+      allow list: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      allow create: if request.auth != null && 
+        request.resource.data.userId == request.auth.uid;
+      
+      allow update: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        request.auth.token.admin == true
+      );
+      
+      allow delete: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+
+    // ===========================================
+    // ADDITIONAL RULES FOR HOME SCREEN AND USER OPERATIONS
+    // ===========================================
+    
+    // Allow all authenticated users to read announcements for home screen
+    match /announcements/{announcementId} {
+      allow read: if request.auth != null;
+      allow list: if request.auth != null && 
+        request.query.limit <= 20; // Limit announcement queries
+    }
+    
+    // ===========================================
+    // ADDITIONAL SHIFTING RULES
+    // ===========================================
+    
+    // Note: Shifting rules are now consolidated in the main orders collection match block above
+    
+    // ===========================================
+    // PICKUP & DROP SPECIFIC RULES  
+    // ===========================================
+    
+    // Note: Pickup & Drop rules are now consolidated in the main orders collection match block above
+    
+    // ===========================================
+    // USER PROFILE AND SETTINGS
+    // ===========================================
+    
+    // User profiles collection
+    match /userProfiles/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // TEMPORARY: Allow any authenticated user to read user profiles (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // User preferences
+    match /userPreferences/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      // TEMPORARY: Allow any authenticated user to read user preferences (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // User analytics and activity data
+    match /userAnalytics/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      // TEMPORARY: Allow any authenticated user to read user analytics (remove this in production)  
+      allow read, list: if request.auth != null;
+    }
+    
+    // User activity logs
+    match /userActivity/{activityId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      // TEMPORARY: Allow any authenticated user full access (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // ===========================================
+    // LOCATION AND TRACKING
+    // ===========================================
+    
+    // Driver location updates
+    match /driverLocations/{driverId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == driverId;
+    }
+    
+    // Order tracking
+    match /orderTracking/{orderId} {
+      allow read: if request.auth != null && (
+        resource.data.userId == request.auth.uid ||
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow write: if request.auth != null && (
+        resource.data.driverId == request.auth.uid
+      );
+      
+      allow create: if request.auth != null;
+    }
+    
+    // ===========================================
+    // ADDITIONAL ADMIN COLLECTIONS
+    // ===========================================
+    
+    // System logs and audit trail
+    match /systemLogs/{logId} {
+      allow read, create: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read system logs (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Application configuration
+    match /config/{configId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read config (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Performance metrics
+    match /metrics/{metricId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read metrics (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Backup and maintenance
+    match /backups/{backupId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read backups (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Admin dashboard data
+    match /dashboard/{dashboardId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read dashboard data (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Dashboard statistics collection
+    match /dashboardStats/{statId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read dashboard stats (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Revenue statistics
+    match /revenueStats/{statId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read revenue stats (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // Order statistics
+    match /orderStats/{statId} {
+      allow read, write: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // TEMPORARY: Allow any authenticated user to read order stats (remove this in production)
+      allow read, list: if request.auth != null;
+    }
+    
+    // ===========================================
+    // MAINTENANCE MODE - System maintenance control
+    // ===========================================
+    match /maintenance/{maintenanceId} {
+      // Allow all authenticated users to read maintenance status
+      allow read: if request.auth != null;
+      
+      // Allow listing maintenance documents for authenticated users
+      allow list: if request.auth != null;
+      
+      // Only admins can create/update maintenance mode
+      allow create, update: if request.auth != null && 
+        request.auth.token.admin == true;
+      
+      // Allow admins to delete maintenance records
+      allow delete: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Specific maintenance mode document
+    match /maintenance/status {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // App maintenance configuration
+    match /appMaintenance/{maintenanceId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // System status checking
+    match /systemStatus/{statusId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Global system status document
+    match /systemStatus/global {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // APP STATUS AND FEATURE FLAGS
+    // ===========================================
+    match /appStatus/{statusId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Feature flags for app functionality
+    match /featureFlags/{flagId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // App version and update information
+    match /appVersion/{versionId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Service availability status
+    match /serviceStatus/{serviceId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // ADDITIONAL SYSTEM COLLECTIONS
+    // ===========================================
+    
+    // Emergency notifications and alerts
+    match /emergencyAlerts/{alertId} {
+      allow read: if request.auth != null;
+      allow create, update, delete: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // System configuration and flags
+    match /systemConfig/{configId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // API rate limiting and throttling
+    match /rateLimits/{limitId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // Health check and monitoring
+    match /healthCheck/{checkId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true;
+    }
+    
+    // ===========================================
+    // ERROR HANDLING AND FALLBACK RULES
+    // ===========================================
+    
+    // Generic fallback for user's own data
+    match /{collection}/{documentId} {
+      allow read, write: if request.auth != null && 
+        collection in ['userSettings', 'userHistory', 'userFavorites'] &&
+        documentId == request.auth.uid;
+    }
+    
+    // Fallback rule for system collections
+    match /{collection}/{documentId} {
+      allow read: if request.auth != null && 
+        collection in [
+          'maintenance', 'systemStatus', 'appStatus', 'featureFlags', 
+          'appVersion', 'serviceStatus', 'emergencyAlerts', 'systemConfig',
+          'rateLimits', 'healthCheck'
+        ];
+      
+      allow write: if request.auth != null && 
+        request.auth.token.admin == true &&
+        collection in [
+          'maintenance', 'systemStatus', 'appStatus', 'featureFlags', 
+          'appVersion', 'serviceStatus', 'emergencyAlerts', 'systemConfig',
+          'rateLimits', 'healthCheck'
+        ];
+    }
+  }
+}
